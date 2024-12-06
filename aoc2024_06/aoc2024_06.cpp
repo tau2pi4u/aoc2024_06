@@ -16,6 +16,12 @@ enum class Direction
     Count
 };
 
+template <typename T>
+T DirTo(Direction dir)
+{
+    return static_cast<T>(dir);
+}
+
 enum class MoveType
 {
     Normal,
@@ -46,24 +52,34 @@ struct Board
                 if (c == '^')
                 {
                     guard.dir = Direction::Up;
-                    guard.x = obstructions.back().size() - 1;
-                    guard.y = obstructions.size() - 1;
+                    guard.x = static_cast<int>(obstructions.back().size() - 1);
+                    guard.y = static_cast<int>(obstructions.size() - 1);
                 }
             }
-            boardX = obstructions.back().size();
-            visited.push_back(std::vector<char>(boardX));
+            boardX = static_cast<int>(obstructions.back().size());
+            for (int i = 0; i < static_cast<int>(Direction::Count); ++i)
+            {
+                visited[i].push_back(std::vector<bool>(boardX));
+            }
         }
-        boardY = obstructions.size();
-        visited[guard.y][guard.x] |= DirToMask();
+        boardY = static_cast<int>(obstructions.size());
+        visited[DirTo<size_t>(guard.dir)][guard.y][guard.x] = true;
     }
 
     void Reset(Guard const& resetGuard)
     {
-        for (auto & row : visited)
+        for (int i = 0; i < DirTo<int>(Direction::Count); ++i)
         {
-            for (auto & cell : row)
+            for (auto& row : visited[i])
             {
-                cell = 0;
+                /*for (size_t x = 0; x < boardX; ++x)
+                {
+                    row[x] = false;
+                }*/
+                /*row.clear();
+                row.resize(boardX);*/
+
+                std::fill(row.begin(), row.end(), false);
             }
         }
         guard = resetGuard;
@@ -160,13 +176,12 @@ struct Board
         {
             guard.x += dirX;
             guard.y += dirY;
-
-            char dirMask = DirToMask();
-            if (visited[guard.y][guard.x] & dirMask)
+            
+            if (visited[DirTo<size_t>(guard.dir)][guard.y][guard.x])
             {
                 return MoveType::Cycle; // cycle 
             }
-            visited[guard.y][guard.x] |= dirMask;
+            visited[DirTo<size_t>(guard.dir)][guard.y][guard.x] = true;
             break;
         }
         case MoveType::Rotate:
@@ -181,15 +196,21 @@ struct Board
         return moveType;
     }
 
+    bool HasVisited(int x, int y) const
+    {
+        return visited[0][y][x] || visited[1][y][x] || visited[2][y][x] || visited[3][y][x];
+    }
+
     int part1()
     {
         while (GuardStep() != MoveType::Leave);
         int count = 0;
-        for (auto const& row : visited)
+
+        for (int y = 0; y < boardY; ++y)
         {
-            for (auto const& cell : row)
+            for (int x = 0; x < boardX; ++x)
             {
-                count += !!cell;
+                count += HasVisited(x, y);
             }
         }
         return count;
@@ -219,7 +240,7 @@ struct Board
             for (size_t x = 0; x < obstructions[y].size(); ++x)
             {
                 if (obstructions[y][x]) continue;
-                if (!p1Board.visited[y][x]) { continue; }
+                if (!p1Board.HasVisited(x, y)) { continue; }
                 obstructions[y][x] = true;
                 count += HasCycle();
                 obstructions[y][x] = false;
@@ -240,7 +261,8 @@ struct Board
     }
 
     std::vector<std::vector<bool>> obstructions;
-    std::vector<std::vector<char>> visited;
+    //std::vector<std::vector<char>> visited;
+    std::vector<std::vector<bool>> visited[static_cast<size_t>(Direction::Count)];
 
     int boardX;
     int boardY;
