@@ -679,6 +679,7 @@ int Part2SingleGraph(Board const& board, StateGraph & graph)
 
 int main()
 {
+    auto fstart = std::chrono::high_resolution_clock::now();
     std::ifstream inputFile;
     inputFile.open("input.txt", std::ios::in);
 
@@ -688,7 +689,6 @@ int main()
 
     int p1 = p1Board.part1();
     p1Board.guard = board.guard;
-    
 
     printf("p1: %d\n", p1);
 
@@ -697,38 +697,11 @@ int main()
         int p2 = Part2SingleGraph(p1Board, graph);
         printf("p2: %d\n", p2);
     }
-
-    size_t durationSum = 0;
-    int iters = 1 << 12;
-    int p2;
-    for (int i = 0; i < iters; ++i)
-    {
-        printf("\r%d/%d", i, iters);
-
-        auto start = std::chrono::high_resolution_clock::now();
-
-        StateGraph graph(p1Board);
-        p2 = Part2SingleGraph(p1Board, graph);
-        auto stop = std::chrono::high_resolution_clock::now();
-        durationSum += std::chrono::duration_cast<std::chrono::microseconds>(stop - start).count();
-    }
-    printf("\n");
-
-    printf("p2: %d\n%.2f ms\n", p2, static_cast<float>(durationSum) / (1000 * iters)); 
     
+    auto fstop = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(fstop - fstart).count();
 
-    /*size_t durationSum = 0;
-    int iters = 1 << 1;
-    int p2;
-    for (int i = 0; i < iters; ++i)
-    {
-        auto start = std::chrono::high_resolution_clock::now();
-        p2 = Part2(p1Board);
-        auto stop = std::chrono::high_resolution_clock::now();
-        durationSum += std::chrono::duration_cast<std::chrono::microseconds>(stop - start).count();
-    }
-
-    printf("p2: %d\n%.2f ms\n", p2, static_cast<float>(durationSum) / (1000 * iters));*/
+    printf("%llu us", duration);
 }
 
 // Run program: Ctrl + F5 or Debug > Start Without Debugging menu
