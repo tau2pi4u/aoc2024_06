@@ -9,11 +9,8 @@
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
-#include <cmath>
 
 #define MORTON 0
-#define CELL_TO_NEXT 0
-#define DEBUG_PRINT 1
 
 using obstacleType = char;
 
@@ -434,11 +431,9 @@ struct StateNode
     Direction hitByGuardMovingInDir;
     int x;
     int y;
+    bool valid;
     int tag = 0;
     StateNode* next = nullptr;
-    bool valid = false;
-    bool incoming = false;
-    bool connected = false;
 };
 
 struct StateHasher
@@ -460,14 +455,6 @@ struct StateGraph
         {
             row.resize(board.boardX);
         }
-
-#if CELL_TO_NEXT
-        cellToNext.resize(board.boardY * board.boardX);
-        for (auto& row : cellToNext)
-        {
-            row.reserve(sqrt(board.boardX));
-        }
-#endif
 
         nodes = new StateNode[nodeCount];
 
@@ -497,7 +484,10 @@ struct StateGraph
         stateToNodeFast = OneDVector<std::array<StateNode*, static_cast<size_t>(Direction::Count)>>(stateToNodeVec);
         stateToNodeVec.clear();
 
-        ConnectNodeToGraph(nodes[0]);
+        for (size_t i = 0; i < count; ++i)
+        {
+            ConnectNodeToGraph(nodes[i]);
+        }
     }
 
     ~StateGraph()
@@ -510,16 +500,8 @@ struct StateGraph
         return x < 0 || y < 0 || x >= board.boardX || y >= board.boardY;
     }
 
-    void ConnectNodeToGraph(StateNode & node, std::unordered_set<StateNode*> & toConnect, bool resetLater)
+    void ConnectNodeToGraph(StateNode & node)
     {
-        if (resetLater)
-        {
-            resetCache[&node] = node;
-        }
-
-        if (node.connected) return;
-        node.connected = true;
-
         bool isFirst = node.hitByGuardMovingInDir == Direction::Count;
 
         Direction newDir;
@@ -559,83 +541,19 @@ struct StateGraph
             y += DirectionToY(newDir);
             
             if (OutOfBounds(x, y)) break;
-
-            if (!board.obstructions.get(y, x))
-            {
-
-#if CELL_TO_NEXT
-                cellToNext[y * board.boardX + x].insert(&node);
-#endif
-                continue;
-            }
+            if (!board.obstructions.get(y, x)) continue;
             //if (stateToNode.count(std::make_tuple(x, y, newDir)) == 0) continue;
-
+            
             auto next = stateToNodeFast.get(y, x)[DirTo<size_t>(newDir)];
 
             //node.next = stateToNode.at(std::make_tuple(x, y, newDir));
             node.next = next;
-            next->incoming = true;
-            if (!next->connected)
-            {
-                toConnect.insert(next);
-            }
             break;
         } while (true);
 
         node.valid = true;
     }
 
-    void ConnectNodeToGraph(StateNode& baseNode, bool resetLater = false)
-    {
-        std::unordered_set<StateNode*> toConnect = { &baseNode };
-        std::unordered_set<StateNode*> prev;
-        do
-        {
-            prev.clear();
-            prev.swap(toConnect);
-            for (auto& node : prev)
-            {
-                ConnectNodeToGraph(*node, toConnect, resetLater);
-            }
-        } while (!toConnect.empty());
-    }
-
-#if CELL_TO_NEXT
-    void AddObstruction(int x, int y)
-    {
-        size_t additionBase = board.obstructionCount * DirTo<size_t>(Direction::Count) + 1;
-
-        for (int i = 0; i < DirTo<int>(Direction::Count); ++i)
-        {
-            auto& newNode = nodes[additionBase + i];
-            newNode = StateNode{
-                .hitByGuardMovingInDir = static_cast<Direction>(i),
-                .x = x,
-                .y = y,
-                .valid = false
-            };
-        }
-
-        for (auto& willBeHitBy : cellToNext[y * board.boardX + x])
-        {
-            Direction incoming = Rotate(willBeHitBy->hitByGuardMovingInDir, 1);
-
-            auto& relevantNode = nodes[additionBase + DirTo<size_t>(incoming)];
-
-            savedNodeNextCache[willBeHitBy] = willBeHitBy->next;
-            willBeHitBy->next = &relevantNode;
-
-            relevantNode.valid = true;
-        }
-
-        for (int i = 0; i < DirTo<int>(Direction::Count); ++i)
-        {
-            auto& newNode = nodes[additionBase + i];
-
-            if (newNode.valid) ConnectNodeToGraph(newNode);
-        }
-    }
-#else
     void AddObstruction(int x, int y)
     {
         size_t additionBase = board.obstructionCount * DirTo<size_t>(Direction::Count) + 1;
@@ -647,7 +565,7 @@ struct StateGraph
             if (!newNode.valid) continue;
 
             Direction hitFrom = static_cast<Direction>(i);
-            newNode = StateNode{ .hitByGuardMovingInDir = hitFrom, .x = x, .y = y, .next = nullptr, .valid = true };
+            newNode = StateNode{ .hitByGuardMovingInDir = hitFrom, .x = x, .y = y, .valid = true, .next = nullptr };
 
             int localX = x;
             int localY = y;
@@ -692,10 +610,9 @@ struct StateGraph
             }
            
             if (!hit) continue;
-            ConnectNodeToGraph(newNode, true);
+            ConnectNodeToGraph(newNode);
         }
     }
-#endif
 
     void ResetObstruction()
     {
@@ -703,11 +620,6 @@ struct StateGraph
         {
             ptr->next = prevNext;
         }
-        for (auto& [ptr, resetTo] : resetCache)
-        {
-            *ptr = resetTo;
-        }
-        resetCache.clear();
         savedNodeNextCache.clear();
     }
 
@@ -745,21 +657,50 @@ struct StateGraph
 
     const Board& board;
 
-    std::vector<std::unordered_set<StateNode*>> cellToNext;
-
     std::vector<std::vector<std::array<StateNode*, static_cast<size_t>(Direction::Count)>>> stateToNodeVec;
     OneDVector<std::array<StateNode*, static_cast<size_t>(Direction::Count)>> stateToNodeFast;
     //std::unordered_map<std::tuple<int, int, Direction>, StateNode*, StateHasher> stateToNode;
     std::unordered_map<StateNode*, StateNode*> savedNodeNextCache;
-    std::unordered_map<StateNode*, StateNode> resetCache;
 };
+
+int Part2YGraph(Board const& board, int y)
+{
+    StateGraph graph(board);
+    int count = 0;
+    for (int x = 0; x < board.boardX; ++x)
+    {
+        if (board.obstructions.get(y, x)) continue;
+        if (!board.cells.get(y, x).dirMask) continue;
+        graph.AddObstruction(x, y);
+
+        bool hasCycle = false;
+        for (size_t i = 0; i < 4; i++)
+        {
+            size_t idx = i - 4 + graph.nodeCount;
+            hasCycle |= !hasCycle && graph.nodes[idx].valid && graph.HasCycle(idx);
+        }
+
+        //bool hasCycle = graph.HasCycle(0);
+        count += hasCycle;
+        graph.ResetObstruction();
+    }
+    return count;
+}
+
+int Part2ParallelGraph(Board const& board)
+{
+    int count = 0;
+//#pragma omp parallel for
+    for (int y = 0; y < board.boardY; ++y)
+    {
+        count += Part2YGraph(board, y);
+    }       
+    return count;
+}
 
 int Part2SingleGraph(Board const& board, StateGraph & graph)
 {
     int count = 0;
-
-    graph.HasCycle(0);
-
     for (int y = 0; y < board.boardY; ++y)
     {
         for (int x = 0; x < board.boardX; ++x)
@@ -773,14 +714,6 @@ int Part2SingleGraph(Board const& board, StateGraph & graph)
                 if (!graph.nodes[i].valid) continue;
                 hasCycle |= graph.HasCycle(0);
             }
-
-#if DEBUG_PRINT
-            if (hasCycle)
-            {
-                printf("(%d, %d)\n", x, y);
-            }
-#endif
-
             count += hasCycle;
             graph.ResetObstruction();
         }
@@ -833,7 +766,7 @@ int main()
     timer.Begin();
 
     int p2;
-    int itrs = DEBUG_PRINT ? 1 : 1024;
+    int itrs = 1024;
     for (int i = 0; i < itrs; ++i)
     {
         StateGraph graph(p1Board);
