@@ -9,6 +9,13 @@
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
+#include <cmath>
+
+#define MORTON 0
+#define CELL_TO_NEXT 0
+#define DEBUG_PRINT 1
+
+using obstacleType = char;
 
 enum class Direction
 {
@@ -54,6 +61,7 @@ struct MortonOrder
 {
     MortonOrder()
     {
+#if MORTON
         _lookup = new std::array<std::array<uint32_t, dim>, dim>();
         for (int y = 0; y < dim; ++y)
         {
@@ -62,11 +70,16 @@ struct MortonOrder
                 (*_lookup)[y][x] = Generate(y, x);
             }
         }
+#else
+        _lookup = nullptr;
+#endif
     }
 
     ~MortonOrder()
     {
+#if MORTON
         delete _lookup;
+#endif
     }
 
     uint32_t Generate(uint8_t y, uint8_t x)
@@ -97,6 +110,7 @@ static MortonOrder<256> g_mortonOrder;
 
 uint32_t RoundUpPow2(uint32_t v)
 {
+#if MORTON
     v--;
     v |= v >> 1;
     v |= v >> 2;
@@ -105,6 +119,9 @@ uint32_t RoundUpPow2(uint32_t v)
     v |= v >> 16;
     v++;
     return v;
+#else
+    return v;
+#endif
 }
 
 uint32_t RoundUpPow2(size_t v)
@@ -131,22 +148,38 @@ struct OneDVector
         }
     }
 
+    size_t _getlocation(size_t y, size_t x) const
+    {
+#if MORTON
+        return g_mortonOrder(y, x);
+#else
+        return y * innerDim + x;
+#endif
+    }
+
     void set(size_t y, size_t x, T const& val)
     {
-        //_vec[y * innerDim + x] = val;
-        uint32_t mo = g_mortonOrder(y, x);
-        _vec[mo] = val;
+        _vec[_getlocation(y, x)] = val;
+        //uint32_t mo = g_mortonOrder(y, x);
+        //_vec[mo] = val;
     }
 
     T& get(size_t y, size_t x)
         requires(!std::is_same<T, bool>::value)
     {
-        return _vec[g_mortonOrder(y, x)];
+        return _vec[_getlocation(y, x)];
     }
 
     T const& get(size_t y, size_t x) const
+        requires(!std::is_same<T, bool>::value)
     {
-        return _vec[g_mortonOrder(y, x)];
+        return _vec[_getlocation(y, x)];
+    }
+
+    bool get(size_t y, size_t x) const
+        requires(std::is_same<T, bool>::value)
+    {
+        return _vec[_getlocation(y, x)];
     }
 
     size_t innerDim;
@@ -198,7 +231,7 @@ struct Board
         _cells[guard.y][guard.x].dirMask |= DirToMask();
 
         cells = OneDVector<Cell>(_cells);
-        obstructions = OneDVector<char>(_obstructions);
+        obstructions = OneDVector<obstacleType>(_obstructions);
 
         _cells.clear();
         _obstructions.clear();
@@ -356,7 +389,7 @@ struct Board
     std::vector<std::vector<bool>> _obstructions;
     std::vector<std::vector<Cell>> _cells;
 
-    OneDVector<char> obstructions;
+    OneDVector<obstacleType> obstructions;
     OneDVector<Cell> cells;
 
     int boardX;
@@ -401,9 +434,11 @@ struct StateNode
     Direction hitByGuardMovingInDir;
     int x;
     int y;
-    bool valid;
     int tag = 0;
     StateNode* next = nullptr;
+    bool valid = false;
+    bool incoming = false;
+    bool connected = false;
 };
 
 struct StateHasher
@@ -420,6 +455,20 @@ struct StateGraph
         board(board),
         nodeCount((board.obstructionCount + 1) * DirTo<size_t>(Direction::Count) + 1)
     {
+        stateToNodeVec.resize(board.boardY);
+        for (auto& row : stateToNodeVec)
+        {
+            row.resize(board.boardX);
+        }
+
+#if CELL_TO_NEXT
+        cellToNext.resize(board.boardY * board.boardX);
+        for (auto& row : cellToNext)
+        {
+            row.reserve(sqrt(board.boardX));
+        }
+#endif
+
         nodes = new StateNode[nodeCount];
 
         nodes[0] = StateNode{ .hitByGuardMovingInDir = Direction::Count, .x = board.guard.x, .y = board.guard.y, .next = nullptr };
@@ -437,17 +486,18 @@ struct StateGraph
                     if (count < nodeCount)
                     {
                         nodes[count] = StateNode{ .hitByGuardMovingInDir = dir, .x = x, .y = y, .next=nullptr };
-                        stateToNode.insert({ std::make_tuple(x, y, dir), &nodes[count] });
+                        //stateToNode.insert({ std::make_tuple(x, y, dir), &nodes[count] });
+                        stateToNodeVec[y][x][i] = &nodes[count];
                         ++count;
                     }
                 }
             }
         }
 
-        for (size_t i = 0; i < count; ++i)
-        {
-            ConnectNodeToGraph(nodes[i]);
-        }
+        stateToNodeFast = OneDVector<std::array<StateNode*, static_cast<size_t>(Direction::Count)>>(stateToNodeVec);
+        stateToNodeVec.clear();
+
+        ConnectNodeToGraph(nodes[0]);
     }
 
     ~StateGraph()
@@ -460,8 +510,16 @@ struct StateGraph
         return x < 0 || y < 0 || x >= board.boardX || y >= board.boardY;
     }
 
-    void ConnectNodeToGraph(StateNode & node)
+    void ConnectNodeToGraph(StateNode & node, std::unordered_set<StateNode*> & toConnect, bool resetLater)
     {
+        if (resetLater)
+        {
+            resetCache[&node] = node;
+        }
+
+        if (node.connected) return;
+        node.connected = true;
+
         bool isFirst = node.hitByGuardMovingInDir == Direction::Count;
 
         Direction newDir;
@@ -501,16 +559,83 @@ struct StateGraph
             y += DirectionToY(newDir);
             
             if (OutOfBounds(x, y)) break;
-            if (!board.obstructions.get(y, x)) continue;
-            if (stateToNode.count(std::make_tuple(x, y, newDir)) == 0) continue;
 
-            node.next = stateToNode.at(std::make_tuple(x, y, newDir));
+            if (!board.obstructions.get(y, x))
+            {
+
+#if CELL_TO_NEXT
+                cellToNext[y * board.boardX + x].insert(&node);
+#endif
+                continue;
+            }
+            //if (stateToNode.count(std::make_tuple(x, y, newDir)) == 0) continue;
+
+            auto next = stateToNodeFast.get(y, x)[DirTo<size_t>(newDir)];
+
+            //node.next = stateToNode.at(std::make_tuple(x, y, newDir));
+            node.next = next;
+            next->incoming = true;
+            if (!next->connected)
+            {
+                toConnect.insert(next);
+            }
             break;
         } while (true);
 
         node.valid = true;
     }
 
+    void ConnectNodeToGraph(StateNode& baseNode, bool resetLater = false)
+    {
+        std::unordered_set<StateNode*> toConnect = { &baseNode };
+        std::unordered_set<StateNode*> prev;
+        do
+        {
+            prev.clear();
+            prev.swap(toConnect);
+            for (auto& node : prev)
+            {
+                ConnectNodeToGraph(*node, toConnect, resetLater);
+            }
+        } while (!toConnect.empty());
+    }
+
+#if CELL_TO_NEXT
+    void AddObstruction(int x, int y)
+    {
+        size_t additionBase = board.obstructionCount * DirTo<size_t>(Direction::Count) + 1;
+
+        for (int i = 0; i < DirTo<int>(Direction::Count); ++i)
+        {
+            auto& newNode = nodes[additionBase + i];
+            newNode = StateNode{
+                .hitByGuardMovingInDir = static_cast<Direction>(i),
+                .x = x,
+                .y = y,
+                .valid = false
+            };
+        }
+
+        for (auto& willBeHitBy : cellToNext[y * board.boardX + x])
+        {
+            Direction incoming = Rotate(willBeHitBy->hitByGuardMovingInDir, 1);
+
+            auto& relevantNode = nodes[additionBase + DirTo<size_t>(incoming)];
+
+            savedNodeNextCache[willBeHitBy] = willBeHitBy->next;
+            willBeHitBy->next = &relevantNode;
+
+            relevantNode.valid = true;
+        }
+
+        for (int i = 0; i < DirTo<int>(Direction::Count); ++i)
+        {
+            auto& newNode = nodes[additionBase + i];
+
+            if (newNode.valid) ConnectNodeToGraph(newNode);
+        }
+    }
+#else
     void AddObstruction(int x, int y)
     {
         size_t additionBase = board.obstructionCount * DirTo<size_t>(Direction::Count) + 1;
@@ -522,7 +647,7 @@ struct StateGraph
             if (!newNode.valid) continue;
 
             Direction hitFrom = static_cast<Direction>(i);
-            newNode = StateNode{ .hitByGuardMovingInDir = hitFrom, .x = x, .y = y, .valid = true, .next = nullptr };
+            newNode = StateNode{ .hitByGuardMovingInDir = hitFrom, .x = x, .y = y, .next = nullptr, .valid = true };
 
             int localX = x;
             int localY = y;
@@ -545,7 +670,8 @@ struct StateGraph
                 if (!OutOfBounds(searchX, searchY) &&
                     board.obstructions.get(searchY, searchX))
                 {
-                    auto& prevNode = stateToNode.at(std::make_tuple(searchX, searchY, prevDir));
+                    //auto& prevNode = stateToNode.at(std::make_tuple(searchX, searchY, prevDir));
+                    auto& prevNode = stateToNodeFast.get(searchY, searchX)[DirTo<size_t>(prevDir)];
                     savedNodeNextCache[prevNode] = prevNode->next;
 
                     prevNode->next = &newNode;
@@ -566,9 +692,10 @@ struct StateGraph
             }
            
             if (!hit) continue;
-            ConnectNodeToGraph(newNode);
+            ConnectNodeToGraph(newNode, true);
         }
     }
+#endif
 
     void ResetObstruction()
     {
@@ -576,6 +703,11 @@ struct StateGraph
         {
             ptr->next = prevNext;
         }
+        for (auto& [ptr, resetTo] : resetCache)
+        {
+            *ptr = resetTo;
+        }
+        resetCache.clear();
         savedNodeNextCache.clear();
     }
 
@@ -613,40 +745,21 @@ struct StateGraph
 
     const Board& board;
 
-    std::unordered_map<std::tuple<int, int, Direction>, StateNode*, StateHasher> stateToNode;
+    std::vector<std::unordered_set<StateNode*>> cellToNext;
+
+    std::vector<std::vector<std::array<StateNode*, static_cast<size_t>(Direction::Count)>>> stateToNodeVec;
+    OneDVector<std::array<StateNode*, static_cast<size_t>(Direction::Count)>> stateToNodeFast;
+    //std::unordered_map<std::tuple<int, int, Direction>, StateNode*, StateHasher> stateToNode;
     std::unordered_map<StateNode*, StateNode*> savedNodeNextCache;
+    std::unordered_map<StateNode*, StateNode> resetCache;
 };
-
-int Part2YGraph(Board const& board, int y)
-{
-    StateGraph graph(board);
-    int count = 0;
-    for (int x = 0; x < board.boardX; ++x)
-    {
-        if (board.obstructions.get(y, x)) continue;
-        if (!board.cells.get(y, x).dirMask) continue;
-        graph.AddObstruction(x, y);
-        bool hasCycle = graph.HasCycle(0);
-        count += hasCycle;
-        graph.ResetObstruction();
-    }
-    return count;
-}
-
-int Part2ParallelGraph(Board const& board)
-{
-    int count = 0;
-//#pragma omp parallel for
-    for (int y = 0; y < board.boardY; ++y)
-    {
-        count += Part2YGraph(board, y);
-    }       
-    return count;
-}
 
 int Part2SingleGraph(Board const& board, StateGraph & graph)
 {
     int count = 0;
+
+    graph.HasCycle(0);
+
     for (int y = 0; y < board.boardY; ++y)
     {
         for (int x = 0; x < board.boardX; ++x)
@@ -660,6 +773,14 @@ int Part2SingleGraph(Board const& board, StateGraph & graph)
                 if (!graph.nodes[i].valid) continue;
                 hasCycle |= graph.HasCycle(0);
             }
+
+#if DEBUG_PRINT
+            if (hasCycle)
+            {
+                printf("(%d, %d)\n", x, y);
+            }
+#endif
+
             count += hasCycle;
             graph.ResetObstruction();
         }
@@ -677,12 +798,12 @@ struct Timer
         start = std::chrono::high_resolution_clock::now();
     }
 
-    void End(const char * s)
+    void End(const char * s, int itrs = 1)
     {
         time_t stop = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start).count();
         total += duration;
-        printf("%s: %lu us\n", s, duration);
+        printf("%s: %lu us\n", s, duration / itrs);
     }
 
     void PrintTotal()
@@ -707,15 +828,21 @@ int main()
 
     int p1 = p1Board.part1();
     p1Board.guard = board.guard;
-
     timer.End("Part1");
+    printf("p1: %d\n", p1);
     timer.Begin();
-    
-    StateGraph graph(p1Board);
-    int p2 = Part2SingleGraph(p1Board, graph);
+
+    int p2;
+    int itrs = DEBUG_PRINT ? 1 : 1024;
+    for (int i = 0; i < itrs; ++i)
+    {
+        StateGraph graph(p1Board);
+        p2 = Part2SingleGraph(p1Board, graph);
+    }
+    timer.End("Part2", itrs);
+
     printf("p2: %d\n", p2);   
 
-    timer.End("Part2");
     timer.PrintTotal();
 }
 
