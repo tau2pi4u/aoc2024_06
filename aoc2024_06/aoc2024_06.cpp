@@ -73,7 +73,7 @@ struct MortonOrder
     {
         unsigned int z = 0; // z gets the resulting Morton Number.
 
-        for (int i = 0; i < sizeof(x) * CHAR_BIT; i++) // unroll for more speed...
+        for (int i = 0; i < sizeof(x) * 8; i++) // unroll for more speed...
         {
             z |= (x & 1U << i) << i | (y & 1U << i) << (i + 1);
         }
@@ -343,11 +343,6 @@ struct Board
         return cycle;
     }
 
-    bool Part2Walk(Board const& p1Board, int x, int y)
-    {
-
-    }
-
     bool TryFromDir(int x, int y, int dirInt)
     {
         Direction dir = static_cast<Direction>(dirInt);
@@ -444,10 +439,6 @@ struct StateGraph
                         nodes[count] = StateNode{ .hitByGuardMovingInDir = dir, .x = x, .y = y, .next=nullptr };
                         stateToNode.insert({ std::make_tuple(x, y, dir), &nodes[count] });
                         ++count;
-                    }
-                    else
-                    {
-                        __debugbreak();
                     }
                 }
             }
@@ -677,31 +668,55 @@ int Part2SingleGraph(Board const& board, StateGraph & graph)
 }
 
 
+struct Timer
+{
+    using time_t = std::chrono::time_point<std::chrono::high_resolution_clock>;
+
+    void Begin()
+    {
+        start = std::chrono::high_resolution_clock::now();
+    }
+
+    void End(const char * s)
+    {
+        time_t stop = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start).count();
+        total += duration;
+        printf("%s: %lu us\n", s, duration);
+    }
+
+    void PrintTotal()
+    {
+        printf("Total: %lu us\n", total);
+    }
+
+    time_t start;
+    size_t total = 0;
+};
+
 int main()
 {
-    auto fstart = std::chrono::high_resolution_clock::now();
+    Timer timer;
+
+    timer.Begin();
     std::ifstream inputFile;
     inputFile.open("input.txt", std::ios::in);
 
     Board board(inputFile);
-
     Board p1Board = board;
 
     int p1 = p1Board.part1();
     p1Board.guard = board.guard;
 
-    printf("p1: %d\n", p1);
-
-    {
-        StateGraph graph(p1Board);
-        int p2 = Part2SingleGraph(p1Board, graph);
-        printf("p2: %d\n", p2);
-    }
+    timer.End("Part1");
+    timer.Begin();
     
-    auto fstop = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(fstop - fstart).count();
+    StateGraph graph(p1Board);
+    int p2 = Part2SingleGraph(p1Board, graph);
+    printf("p2: %d\n", p2);   
 
-    printf("%llu us", duration);
+    timer.End("Part2");
+    timer.PrintTotal();
 }
 
 // Run program: Ctrl + F5 or Debug > Start Without Debugging menu
