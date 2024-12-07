@@ -12,7 +12,7 @@
 #include <cmath>
 
 #define MORTON 0
-#define CELL_TO_NEXT 0
+#define CELL_TO_NEXT 1
 #define DEBUG_PRINT 1
 
 using obstacleType = char;
@@ -512,9 +512,10 @@ struct StateGraph
 
     void ConnectNodeToGraph(StateNode & node, std::unordered_set<StateNode*> & toConnect, bool resetLater)
     {
-        if (resetLater)
+        if (resetLater && resetCache.count(&node) == 0)
         {
             resetCache[&node] = node;
+            node.connected = false;
         }
 
         if (node.connected) return;
@@ -564,7 +565,10 @@ struct StateGraph
             {
 
 #if CELL_TO_NEXT
-                cellToNext[y * board.boardX + x].insert(&node);
+                if (!resetLater)
+                {
+                    cellToNext[y * board.boardX + x].insert(&node);
+                }
 #endif
                 continue;
             }
@@ -575,7 +579,7 @@ struct StateGraph
             //node.next = stateToNode.at(std::make_tuple(x, y, newDir));
             node.next = next;
             next->incoming = true;
-            if (!next->connected)
+            if (!next->connected || (resetLater && resetCache.count(next) == 0))
             {
                 toConnect.insert(next);
             }
@@ -597,6 +601,7 @@ struct StateGraph
             {
                 ConnectNodeToGraph(*node, toConnect, resetLater);
             }
+            if (toConnect.size() > 1)__debugbreak();
         } while (!toConnect.empty());
     }
 
@@ -614,6 +619,7 @@ struct StateGraph
                 .y = y,
                 .valid = false
             };
+            stateToNodeFast.get(y, x)[i] = &newNode;
         }
 
         for (auto& willBeHitBy : cellToNext[y * board.boardX + x])
@@ -632,7 +638,7 @@ struct StateGraph
         {
             auto& newNode = nodes[additionBase + i];
 
-            if (newNode.valid) ConnectNodeToGraph(newNode);
+            if (newNode.valid) ConnectNodeToGraph(newNode, true);
         }
     }
 #else
@@ -718,6 +724,10 @@ struct StateGraph
 
         while (node)
         {
+#if DEBUG_PRINT == 2
+            printf("\t(%d, %d)\n", node->x, node->y);
+#endif
+
             if (node->tag == tag) return true;
 
             node->tag = tag;
@@ -754,11 +764,11 @@ struct StateGraph
     std::unordered_map<StateNode*, StateNode> resetCache;
 };
 
-int Part2SingleGraph(Board const& board, StateGraph & graph)
+int Part2SingleGraph(Board & board, StateGraph & graph)
 {
     int count = 0;
 
-    graph.HasCycle(0);
+    //graph.HasCycle(0);
 
     for (int y = 0; y < board.boardY; ++y)
     {
@@ -766,6 +776,7 @@ int Part2SingleGraph(Board const& board, StateGraph & graph)
         {
             if (board.obstructions.get(y, x)) continue;
             if (!board.cells.get(y, x).dirMask) continue;
+            board.obstructions.set(y, x, true);
             graph.AddObstruction(x, y);
             bool hasCycle = 0;
             for (size_t i = graph.nodeCount - 4; i < graph.nodeCount && !hasCycle; ++i)
@@ -783,6 +794,7 @@ int Part2SingleGraph(Board const& board, StateGraph & graph)
 
             count += hasCycle;
             graph.ResetObstruction();
+            board.obstructions.set(y, x, false);
         }
     }
     return count;
@@ -833,7 +845,7 @@ int main()
     timer.Begin();
 
     int p2;
-    int itrs = DEBUG_PRINT ? 1 : 1024;
+    int itrs = DEBUG_PRINT ? 1 : 1;
     for (int i = 0; i < itrs; ++i)
     {
         StateGraph graph(p1Board);
